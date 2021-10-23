@@ -12,36 +12,23 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
-
-def write_to_snowflake():
-    snowflakeUser = os.environ.get('SF_USER')
-    snowflakePassword = os.environ.get('SF_PASSWORD')
-    snowflakeWarehouse = os.environ.get('SF_WH')
-    snowflakeDatabase = os.environ.get('SF_DB')
-    snowflakeAccount = os.environ.get('SF_ACCOUNT')
-    snowflakeSchema = os.environ.get('SF_SCHEMA')
+#  This initializes the league, so we have the data as Python objects
+def initialize_league():
     league_id = int(os.environ.get('LEAGUE_ID'))
     year = int(os.environ.get('YEAR'))
     espn_s2 = os.environ.get('ESPN_S2')
     swid = os.environ.get('ESPN_SWID')
-
-    engineStr = f'snowflake://{snowflakeUser}:{snowflakePassword}@{snowflakeAccount}/{snowflakeDatabase}/{snowflakeSchema}?warehouse={snowflakeWarehouse}'
-    engine = create_engine(engineStr)
-
     league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
     print(f"Successfully Initialized League, leagueId: {league_id} in the year: {year}")
+    return league, league_id, year
 
-    dt_pt = datetime.now(pytz.timezone('America/Los_Angeles'))
-    current_as_of = dt_pt.strftime("%D %H:%M %p")
 
-    teams = league.teams
-
-    last_week = teams[0].outcomes.index('UNDECIDED')
-
+#  This creates the team DataFrame, as well as the time DataFrame
+def create_teams_and_times(teams, last_week, current_as_of, league_id, year):
     week_score_tup_map = {}
     for i in range(last_week):
         week_score_tup_map[i+1] = []
-
+    
     teams_table = []
     time_checked_table = []
 
@@ -71,8 +58,12 @@ def write_to_snowflake():
 
     team_df = pd.DataFrame(teams_table)
     time_df = pd.DataFrame(time_checked_table)
+    
+    return week_score_tup_map, team_df, time_df
 
-    for k, tup_ar in week_score_tup_map.items():
+#  This creates the past metrics for the current standings and what the current matchup is looking like.
+def create_rankings_and_scores(league, last_week, team_df, week_score_tup_map):
+    for _, tup_ar in week_score_tup_map.items():
         sorted_scores = sorted(tup_ar, key = lambda x: x[1], reverse=True)
         for index, tup in enumerate(sorted_scores):
             team_id = tup[0]
@@ -113,29 +104,68 @@ def write_to_snowflake():
 
     games_df = pd.DataFrame(current_week_scores)
 
-    team_df.to_sql('fantasy_teams', engine, index=False, if_exists='replace')
-    print("Wrote to fantasy_teams to Snowflake.")
+    return team_df, games_df
 
-    games_df.to_sql('fantasy_scores', engine, index=False, if_exists='replace')
-    print("Wrote to fantasy_scores to Snowflake.")
 
-    time_df.to_sql('fantasy_time', engine, index=False, if_exists='replace')
-    print("Wrote to fantasy_time to Snowflake.")
+#  This creates the SQL Alchemy engine to write to Snowflake
+def create_snowflake_engine():
+    snowflake_user = os.environ.get('SF_USER')
+    snowflake_password = os.environ.get('SF_PASSWORD')
+    snowflake_warehouse = os.environ.get('SF_WH')
+    snowflake_database = os.environ.get('SF_DB')
+    snowflake_account = os.environ.get('SF_ACCOUNT')
+    snowflake_schema = os.environ.get('SF_SCHEMA')
+    engine_str = f'snowflake://{snowflake_user}:{snowflake_password}@{snowflake_account}/{snowflake_database}/{snowflake_schema}?warehouse={snowflake_warehouse}'
+    engine = create_engine(engine_str)
+    print("Created Snowflake engine")
+    return engine
 
-write_to_snowflake()
+#  This takes the pandas DataFrames and writes them to Snowflake tables
+def write_to_snowflake(team_df, games_df, time_df):
+    engine = create_snowflake_engine()
+    
+    team_table_name = 'fantasy_teams'
+    team_df.to_sql(team_table_name, engine, index=False, if_exists='replace')
+    print(f"Wrote {team_table_name} to Snowflake.")
 
-print("Sleeping for 5 seconds")
-time.sleep(5)
+    scores_table_name = 'fantasy_scores'
+    games_df.to_sql(scores_table_name, engine, index=False, if_exists='replace')
+    print(f"Wrote {scores_table_name} to Snowflake.")
+
+    time_table_name = 'fantasy_time'
+    time_df.to_sql(time_table_name, engine, index=False, if_exists='replace')
+    print(f"Wrote {time_table_name} to Snowflake.")
+
+
+#  This extracts the data from ESPN Fantasy and loads it into Snowflake
+def run_el_script():
+    league, league_id, year = initialize_league()
+    
+    dt_pt = datetime.now(pytz.timezone('America/Los_Angeles'))
+    current_as_of = dt_pt.strftime("%D %H:%M %p")
+
+    teams = league.teams
+
+    # This pulls the index of the first week that has not been finalized
+    last_week = teams[0].outcomes.index('UNDECIDED')
+
+    week_score_tup_map, team_df, time_df = create_teams_and_times(teams, last_week, current_as_of, league_id, year)
+
+    team_df, games_df = create_rankings_and_scores(league, last_week, team_df, week_score_tup_map)
+
+    write_to_snowflake(team_df, games_df, time_df)
 
 #  Part 5 about syncing data where you want!
-
-def trigger_census_syncs(census_sync_numbers):
-    for i, sync_num in enumerate(census_sync_numbers):
-        url = 'https://bearer:secret-token:'+os.environ.get('CENSUS_SECRET')+'@app.getcensus.com/api/v1/syncs/'+str(sync_num)+'/trigger'
+def trigger_census_syncs():
+    total_census_syncs = int(os.environ.get('TOTAL_CENSUS_SYNCS'))
+    for i in range(total_census_syncs):
+        sync_num = os.environ.get(f'CENSUS_SYNC_{i+1}')
+        url = 'https://bearer:secret-token:'+os.environ.get('CENSUS_SECRET')+'@app.getcensus.com/api/v1/syncs/'+sync_num+'/trigger'
         requests.post(url)
-        print(f"Triggered Census sync number {i+1}.")
+        print(f"Triggered Census sync number {i+1}.")  
 
-# Insert Census sync urls here
-census_sync_numbers = [8248,8250,8251]
 
-trigger_census_syncs(census_sync_numbers)
+run_el_script()
+time.sleep(2)
+trigger_census_syncs()
+print("Done with script!")
