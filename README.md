@@ -35,7 +35,7 @@ CENSUS_SYNC_3= # Input from Step 5
 Make sure all of the values are all the way to the left towards the `=` sign.
 
 # 4. Run the script! 
-Change the code as you would like. Our fantasy football league rules implement, during the regular season, 50% Head to Head wins, 50% Points For Wins (determined as the top 6 of 12 teams). 
+Change the code as you would like. Our fantasy football league rules implement (during the regular season) 50% Head to Head wins and 50% Points For Wins (determined as the top 6 of 12 teams). 
 
 Adjust these rules as you need for your league!
 
